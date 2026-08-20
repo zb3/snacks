@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clipboard MIME / Firefox diagnostic</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 1000px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      line-height: 1.45;
+    }
+
+    button {
+      font: inherit;
+      margin: .25rem;
+      padding: .45rem .7rem;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 100px;
+      box-sizing: border-box;
+      font: 14px monospace;
+    }
+
+    pre {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      background: #eee;
+      padding: 1rem;
+      border-radius: 6px;
+    }
+
+    table {
+      border-collapse: collapse;
+      margin: 1rem 0;
+    }
+
+    th, td {
+      border: 1px solid #999;
+      padding: .4rem .7rem;
+    }
+
+    .section {
+      border-top: 1px solid #ccc;
+      margin-top: 2rem;
+      padding-top: 1rem;
+    }
+
+    .ok { font-weight: bold; }
+  </style>
+</head>
+
+<body>
+  <h1>Clipboard MIME / Firefox diagnostic</h1>
+
+  <p>
+    This page deliberately writes the same Markdown/HTML content using several
+    different clipboard mechanisms. After each test, inspect the clipboard with
+    <code>wl-paste</code>.
+  </p>
+
+  <p>
+    Secure context:
+    <strong id="secure"></strong>
+  </p>
+
+  <h2>Test data</h2>
+
+  <textarea id="markdown">| Name | Age |
+| --- | ---: |
+| Alice | 30 |
+| Bob | 25 |
+| Carol | 41 |</textarea>
+
+  <textarea id="html"><table>
+  <thead>
+    <tr><th>Name</th><th>Age</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>Alice</td><td>30</td></tr>
+    <tr><td>Bob</td><td>25</td></tr>
+    <tr><td>Carol</td><td>41</td></tr>
+  </tbody>
+</table></textarea>
+
+  <div class="section">
+    <h2>1. Modern Clipboard API</h2>
+
+    <button id="writeText">navigator.clipboard.writeText()</button>
+
+    <button id="writePlainItem">
+      ClipboardItem: text/plain only
+    </button>
+
+    <button id="writePlainHtml">
+      ClipboardItem: text/plain + text/html
+    </button>
+
+    <button id="writeHtmlPlainReversed">
+      ClipboardItem: HTML + plain (reverse insertion order)
+    </button>
+  </div>
+
+  <div class="section">
+    <h2>2. Legacy copy</h2>
+
+    <button id="execCommand">textarea + execCommand("copy")</button>
+
+    <button id="execCommandSelection">selection + execCommand("copy")</button>
+  </div>
+
+  <div class="section">
+    <h2>3. copy-event tests</h2>
+
+    <button id="eventPlain">
+      dispatch copy → setData(text/plain)
+    </button>
+
+    <button id="eventPlainHtml">
+      dispatch copy → setData(text/plain + text/html)
+    </button>
+
+    <button id="eventHtmlOnly">
+      dispatch copy → setData(text/html only)
+    </button>
+  </div>
+
+  <div class="section">
+    <h2>4. Read clipboard back from JavaScript</h2>
+
+    <button id="readClipboard">
+      navigator.clipboard.read()
+    </button>
+
+    <button id="readText">
+      navigator.clipboard.readText()
+    </button>
+
+    <pre id="output">No output yet.</pre>
+  </div>
+
+  <div class="section">
+    <h2>5. Browser information</h2>
+    <pre id="info"></pre>
+  </div>
+
+  <div class="section">
+    <h2>Reference table</h2>
+
+    <table id="referenceTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Age</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Alice</td><td>30</td></tr>
+        <tr><td>Bob</td><td>25</td></tr>
+        <tr><td>Carol</td><td>41</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+<script>
+"use strict";
+
+const $ = id => document.getElementById(id);
+
+$("secure").textContent = String(window.isSecureContext);
+
+function markdown() {
+  return $("markdown").value;
+}
+
+function html() {
+  return $("html").value;
+}
+
+function blob(text, type) {
+  return new Blob([text], { type });
+}
+
+function show(value) {
+  $("output").textContent =
+    typeof value === "string"
+      ? value
+      : JSON.stringify(value, null, 2);
+}
+
+function reportError(error) {
+  show(
+    error && error.stack
+      ? error.stack
+      : String(error)
+  );
+}
+
+/*
+ * 1a. navigator.clipboard.writeText()
+ */
+$("writeText").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(markdown());
+    show("SUCCESS: navigator.clipboard.writeText()");
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * 1b. ClipboardItem with text/plain only.
+ *
+ * This is particularly important:
+ * if this becomes TSV on the affected Firefox installation,
+ * there is no HTML representation involved at all.
+ */
+$("writePlainItem").addEventListener("click", async () => {
+  try {
+    const item = new ClipboardItem({
+      "text/plain": blob(markdown(), "text/plain")
+    });
+
+    await navigator.clipboard.write([item]);
+
+    show(
+      "SUCCESS: ClipboardItem containing text/plain only\n\n" +
+      markdown()
+    );
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * 1c. ClipboardItem with both representations.
+ */
+$("writePlainHtml").addEventListener("click", async () => {
+  try {
+    const item = new ClipboardItem({
+      "text/plain": blob(markdown(), "text/plain"),
+      "text/html": blob(html(), "text/html")
+    });
+
+    await navigator.clipboard.write([item]);
+
+    show(
+      "SUCCESS: ClipboardItem containing text/plain + text/html\n\n" +
+      "text/plain:\n" +
+      markdown() +
+      "\n\ntext/html:\n" +
+      html()
+    );
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * 1d. Same formats, but HTML is inserted first.
+ *
+ * Normally insertion order shouldn't alter the semantics, but this gives
+ * us another useful control for browser/implementation quirks.
+ */
+$("writeHtmlPlainReversed").addEventListener("click", async () => {
+  try {
+    const item = new ClipboardItem({
+      "text/html": blob(html(), "text/html"),
+      "text/plain": blob(markdown(), "text/plain")
+    });
+
+    await navigator.clipboard.write([item]);
+
+    show(
+      "SUCCESS: ClipboardItem containing text/html + text/plain\n" +
+      "(HTML inserted first)\n\n" +
+      "text/plain:\n" +
+      markdown()
+    );
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * 2a. Classic hidden textarea + execCommand.
+ */
+$("execCommand").addEventListener("click", () => {
+  const textarea = document.createElement("textarea");
+
+  textarea.value = markdown();
+
+  textarea.style.position = "fixed";
+  textarea.style.left = "-10000px";
+  textarea.style.top = "0";
+  textarea.style.opacity = "0";
+
+  document.body.appendChild(textarea);
+
+  textarea.focus();
+  textarea.select();
+
+  let result;
+
+  try {
+    result = document.execCommand("copy");
+  } catch (e) {
+    document.body.removeChild(textarea);
+    reportError(e);
+    return;
+  }
+
+  document.body.removeChild(textarea);
+
+  show(
+    'document.execCommand("copy") returned: ' +
+    result +
+    "\n\nTextarea contents:\n" +
+    markdown()
+  );
+});
+
+
+/*
+ * 2b. Actual DOM selection + execCommand.
+ *
+ * This is closer to the traditional "select something and copy it"
+ * mechanism. The copy event listener below will also observe this.
+ */
+$("execCommandSelection").addEventListener("click", () => {
+  const table = $("referenceTable");
+
+  const range = document.createRange();
+  range.selectNode(table);
+
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  let result;
+
+  try {
+    result = document.execCommand("copy");
+  } catch (e) {
+    selection.removeAllRanges();
+    reportError(e);
+    return;
+  }
+
+  selection.removeAllRanges();
+
+  show(
+    'Selection + document.execCommand("copy") returned: ' +
+    result
+  );
+});
+
+
+/*
+ * 3. copy-event experiments.
+ *
+ * Important: a synthetic "copy" event does NOT itself put anything
+ * on the system clipboard. These tests therefore use a real user
+ * selection and execCommand(), which causes the browser's copy machinery
+ * to invoke the copy event.
+ */
+
+let copyMode = null;
+
+document.addEventListener("copy", event => {
+  if (!copyMode)
+    return;
+
+  console.log(
+    "[copy event]",
+    "mode =", copyMode,
+    "clipboardData =", event.clipboardData
+  );
+
+  if (copyMode === "plain") {
+    event.clipboardData.setData(
+      "text/plain",
+      markdown()
+    );
+
+    event.preventDefault();
+
+    console.log(
+      "[copy event] supplied text/plain:",
+      markdown()
+    );
+  }
+
+  if (copyMode === "plain-html") {
+    event.clipboardData.setData(
+      "text/plain",
+      markdown()
+    );
+
+    event.clipboardData.setData(
+      "text/html",
+      html()
+    );
+
+    event.preventDefault();
+
+    console.log(
+      "[copy event] supplied text/plain + text/html"
+    );
+  }
+
+  if (copyMode === "html-only") {
+    event.clipboardData.setData(
+      "text/html",
+      html()
+    );
+
+    event.preventDefault();
+
+    console.log(
+      "[copy event] supplied text/html only"
+    );
+  }
+
+  copyMode = null;
+});
+
+
+function runCopyEventTest(mode) {
+  copyMode = mode;
+
+  const textarea = document.createElement("textarea");
+
+  /*
+   * We need an actual selection because execCommand("copy") is what
+   * triggers the browser's real copy event.
+   */
+  textarea.value = "Clipboard event test";
+
+  textarea.style.position = "fixed";
+  textarea.style.left = "-10000px";
+  textarea.style.top = "0";
+
+  document.body.appendChild(textarea);
+
+  textarea.focus();
+  textarea.select();
+
+  let result;
+
+  try {
+    result = document.execCommand("copy");
+  } catch (e) {
+    document.body.removeChild(textarea);
+    copyMode = null;
+    reportError(e);
+    return;
+  }
+
+  document.body.removeChild(textarea);
+
+  show(
+    "copy event mode: " + mode +
+    "\nexecCommand result: " + result +
+    "\n\nCheck the browser console for the copy-event log."
+  );
+}
+
+$("eventPlain").addEventListener(
+  "click",
+  () => runCopyEventTest("plain")
+);
+
+$("eventPlainHtml").addEventListener(
+  "click",
+  () => runCopyEventTest("plain-html")
+);
+
+$("eventHtmlOnly").addEventListener(
+  "click",
+  () => runCopyEventTest("html-only")
+);
+
+
+/*
+ * 4a. Read all clipboard formats exposed by the browser.
+ */
+$("readClipboard").addEventListener("click", async () => {
+  try {
+    if (!navigator.clipboard?.read) {
+      show("navigator.clipboard.read() is not available.");
+      return;
+    }
+
+    const items = await navigator.clipboard.read();
+
+    const result = [];
+
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+
+      const entry = {
+        index: i,
+        types: item.types,
+        representations: []
+      };
+
+      for (const type of item.types) {
+        try {
+          const blob = await item.getType(type);
+
+          let value;
+
+          if (type.startsWith("text/")) {
+            value = await blob.text();
+          } else {
+            value =
+              "[non-text Blob: " +
+              blob.size +
+              " bytes]";
+          }
+
+          entry.representations.push({
+            type,
+            size: blob.size,
+            value
+          });
+        } catch (e) {
+          entry.representations.push({
+            type,
+            error: String(e)
+          });
+        }
+      }
+
+      result.push(entry);
+    }
+
+    show(result);
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * 4b. Simple readText().
+ */
+$("readText").addEventListener("click", async () => {
+  try {
+    const text = await navigator.clipboard.readText();
+
+    show(
+      "navigator.clipboard.readText() returned:\n\n" +
+      text
+    );
+  } catch (e) {
+    reportError(e);
+  }
+});
+
+
+/*
+ * Browser / platform information.
+ */
+$("info").textContent = [
+  ["userAgent", navigator.userAgent],
+  ["platform", navigator.platform],
+  ["vendor", navigator.vendor],
+  ["language", navigator.language],
+  ["secure context", window.isSecureContext],
+  ["clipboard API", !!navigator.clipboard],
+  ["clipboard.write", !!navigator.clipboard?.write],
+  ["clipboard.writeText", !!navigator.clipboard?.writeText],
+  ["clipboard.read", !!navigator.clipboard?.read],
+  ["clipboard.readText", !!navigator.clipboard?.readText],
+  ["ClipboardItem", typeof ClipboardItem !== "undefined"],
+  ["execCommand", typeof document.execCommand === "function"],
+  ["permissions", !!navigator.permissions]
+].map(([key, value]) =>
+  key.padEnd(22) + ": " + value
+).join("\n");
+
+
+/*
+ * Log every real copy event. This is deliberately always installed,
+ * because it lets us see whether a given test goes through the DOM
+ * copy-event machinery.
+ */
+document.addEventListener("copy", event => {
+  console.log(
+    "[copy event observed]",
+    {
+      defaultPrevented: event.defaultPrevented,
+      types: event.clipboardData
+        ? Array.from(event.clipboardData.types)
+        : null
+    }
+  );
+});
+
+console.log(
+  "%cClipboard diagnostic loaded",
+  "font-weight:bold"
+);
+</script>
+
+</body>
+</html>

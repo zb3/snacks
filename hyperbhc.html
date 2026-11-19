@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order-3 apeirogonal tiling</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      place-content: center;
+      justify-items: center;
+      gap: 1rem;
+      background: #0a0d14;
+      color: #bac5d6;
+      font: 15px/1.5 system-ui, sans-serif;
+    }
+    canvas {
+      width: min(94vw, 82vh);
+      height: min(94vw, 82vh);
+      display: block;
+      touch-action: none;
+    }
+    p { margin: 0; padding: 0 1rem; text-align: center; }
+    kbd { color: white; }
+  </style>
+</head>
+<body>
+  <canvas aria-label="Interactive order-3 apeirogonal tiling on a Poincaré disk"></canvas>
+  <p>Mouse: rotate · <kbd>Arrows</kbd> move · <kbd>Home</kbd> reset</p>
+
+  <script>
+    const canvas = document.querySelector("canvas");
+    const ctx = canvas.getContext("2d");
+    const TAU = 2 * Math.PI;
+    const THIRD = TAU / 3;
+    const keys = new Set();
+
+    // A vertex in disk coordinates and the tangent angle of one incident edge.
+    let root = { x: 0, y: 0, a: -Math.PI / 2 };
+    let rotation = 0, radius = 1, dirty = true;
+
+    // Disk isometry w -> (z + w) / (1 + conjugate(z) * w).
+    // "turn" is the corresponding rotation of a tangent vector at w.
+    function place(zx, zy, wx, wy) {
+      const dr = 1 + zx * wx + zy * wy;
+      const di = zx * wy - zy * wx;
+      const d = dr * dr + di * di;
+      const nx = zx + wx, ny = zy + wy;
+      return {
+        x: (nx * dr + ny * di) / d,
+        y: (ny * dr - nx * di) / d,
+        turn: -2 * Math.atan2(di, dr)
+      };
+    }
+
+    // In this tiling an edge starting at the disk center ends at radius 1/2.
+    function neighbor(v, angle) {
+      const p = place(v.x, v.y, 0.5 * Math.cos(angle), 0.5 * Math.sin(angle));
+      return { x: p.x, y: p.y, a: angle + p.turn + Math.PI }; // points back
+    }
+
+    // Change the generation root, not the view. This keeps long trips stable.
+    function rebase() {
+      for (;;) {
+        let best = root;
+        let bestD = root.x ** 2 + root.y ** 2;
+        for (let i = 0; i < 3; i++) {
+          const n = neighbor(root, root.a + i * THIRD);
+          const d = n.x ** 2 + n.y ** 2;
+          if (d < bestD - 1e-10) { best = n; bestD = d; }
+        }
+        if (best === root) return;
+        root = best;
+      }
+    }
+
+    function travel(dx, dy) {
+      const distance = Math.hypot(dx, dy);
+      if (!distance) return;
+
+      // Move the scene opposite to the observer, and undo the view rotation.
+      const c = Math.cos(rotation), s = Math.sin(rotation);
+      const k = -Math.tanh(distance / 2) / distance;
+      const tx = k * (c * dx + s * dy);
+      const ty = k * (-s * dx + c * dy);
+
+      const p = place(tx, ty, root.x, root.y);
+      root = { x: p.x, y: p.y, a: root.a + p.turn };
+      rebase();
+      dirty = true;
+    }
+
+    function edge(v, angle, n) {
+      // A diameter segment mapped by a disk isometry is a disk geodesic.
+      // Sample long arcs more finely; tiny edges need just one segment.
+      const lengthPx = radius * Math.hypot(n.x - v.x, n.y - v.y);
+      const steps = Math.max(1, Math.ceil(lengthPx / 8));
+      const dx = 0.5 * Math.cos(angle), dy = 0.5 * Math.sin(angle);
+      ctx.moveTo(v.x, v.y);
+      for (let j = 1; j < steps; j++) {
+        const p = place(v.x, v.y, dx * j / steps, dy * j / steps);
+        ctx.lineTo(p.x, p.y);
+      }
+      ctx.lineTo(n.x, n.y);
+    }
+
+    function draw() {
+      const size = canvas.width;
+      const scale = size / canvas.clientWidth;
+      radius = canvas.clientWidth * 0.485; // CSS pixels
+      const r = radius * scale;
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, size, size);
+      ctx.setTransform(r, 0, 0, r, size / 2, size / 2);
+      ctx.rotate(rotation);
+
+      ctx.beginPath();
+      const stack = [{ v: root, first: true }];
+      const cutoff = Math.max(0, 1 - 0.9 / radius) ** 2;
+      while (stack.length) {
+        const { v, first } = stack.pop();
+        // Non-root vertices skip edge zero: it leads back to the parent.
+        for (let i = first ? 0 : 1; i < 3; i++) {
+          const angle = v.a + i * THIRD;
+          const n = neighbor(v, angle);
+          edge(v, angle, n);
+          if (n.x * n.x + n.y * n.y < cutoff)
+            stack.push({ v: n, first: false });
+        }
+      }
+      ctx.strokeStyle = "#9adeff";
+      ctx.lineWidth = 1.15 / radius;
+      ctx.lineJoin = "round";
+      ctx.stroke();
+
+      // Disk boundary, drawn separately from the tiling edges.
+      ctx.beginPath();
+      ctx.arc(0, 0, 1, 0, TAU);
+      ctx.strokeStyle = "#53677e";
+      ctx.lineWidth = 1 / radius;
+      ctx.stroke();
+    }
+
+    canvas.addEventListener("pointermove", e => {
+      const b = canvas.getBoundingClientRect();
+      const x = e.clientX - b.left - b.width / 2;
+      const y = e.clientY - b.top - b.height / 2;
+      if (Math.hypot(x, y) < 6) return; // angle is unstable near the center
+      rotation = Math.atan2(y, x) + Math.PI / 2;
+      dirty = true;
+    });
+
+    window.addEventListener("keydown", e => {
+      if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home"].includes(e.key)) return;
+
+      e.preventDefault();
+      if (e.key === "Home") {
+        root = { x: 0, y: 0, a: -Math.PI / 2 };
+        rotation = 0;
+        dirty = true;
+      } else keys.add(e.key);
+    });
+    window.addEventListener("keyup", e => keys.delete(e.key));
+    window.addEventListener("blur", () => keys.clear());
+
+    let previous = performance.now();
+    function frame(now) {
+      const dt = Math.min((now - previous) / 1000, 0.05);
+      previous = now;
+      const size = Math.max(1, Math.round(canvas.clientWidth * devicePixelRatio));
+      if (canvas.width !== size || canvas.height !== size) {
+        canvas.width = canvas.height = size;
+        dirty = true;
+      }
+      const dx = Number(keys.has("ArrowRight")) - Number(keys.has("ArrowLeft"));
+      const dy = Number(keys.has("ArrowDown")) - Number(keys.has("ArrowUp"));
+      const length = Math.hypot(dx, dy);
+
+      if (length) {
+        const step = 1.5 * dt / length;
+        travel(dx * step, dy * step);
+      }
+      if (dirty) { draw(); dirty = false; }
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>
